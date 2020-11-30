@@ -1,0 +1,132 @@
+SET
+
+DOMAIN
+  ConstValue = flat(snum)
+  CState = VariableId -> ConstValue
+  LiftedState = lift(CState)
+ENDDOMAIN
+
+
+
+PROBLEM Constant_Propagation
+  direction:  forward
+  carrier:    LiftedState
+  init_start: lift([-> top])
+  init:       bot
+
+
+  equal:      eq
+  combine:    comb
+  retfunc:    comb
+  widening:   wide
+
+TRANSFER
+
+FunctionEntry(_), _: @;
+WhileJoin(), _: @;
+IfJoin(), _: @;
+
+
+ExprStatement(expr), _:
+  let state <= @;
+  in lift(transfer(expr, state));
+
+DeclareStmt(symbol, type), _:
+  let varid = varsym_varid(symbol);
+      state <= @;
+  in lift(state \ [ varid -> top ]);
+
+ScopeStatement(IfStmt(ExprStatement(expr))), _:
+    let state <= @;
+    in lift(transfer(expr, state));
+
+
+UndeclareStmt(vars), _:
+    let state <= @;
+    in  lift(undef_vars(state, vars));
+
+FunctionExit(_, vars), _:
+    let state <= @;
+    in  lift(undef_vars(state, vars));
+
+
+statement, _:
+  println("warning: cannot handle ",
+          "statement of the form: ",
+          stmt_asttext(statement))
+  @;
+
+
+
+SUPPORT
+
+
+transfer :: Expression, CState -> CState;
+transfer(expr, state) =
+  case expr of
+    AssignOp(var, rexp) => state \ [ varref_varid(var) ->
+                                           eval_expr(rexp, state)
+                                         ];
+    _ => state;
+  endcase;
+
+apply_op :: str, snum, snum -> snum;
+apply_op(op, a, b) = 
+  case op of
+    "+" => a + b;
+    "-" => a - b;
+    "*" => a * b;
+    "/" => a / b;
+    "==" => if a = b then 1 else 0;
+    "<" => if a < b then 1 else 0;
+    "<=" => if a <= b then 1 else 0;
+    _   => println("Unsupported operation in snum_op: ", op)
+           -1;
+  endcase;
+
+binary_op :: str, ConstValue, ConstValue -> ConstValue;
+binary_op(_, bot, _) = bot;
+binary_op(_, _, bot) = bot;
+binary_op(_, top, _) = top;
+binary_op(_, _, top) = top;
+binary_op(op, lval, rval) = 
+  let a <= lval;
+      b <= rval;
+  in lift(apply_op(op, a, b));
+
+eval_bin_expr :: str, Expression, Expression, CState -> ConstValue;
+eval_bin_expr(op, lexp, rexp, state) =
+  let lval = eval_expr(lexp, state);
+      rval = eval_expr(rexp, state);
+  in  binary_op(op, lval, rval);
+
+eval_expr :: Expression, CState -> ConstValue;
+eval_expr(expr, state) = 
+  case expr of
+    IntVal(v) => lift(val-astint(v));
+    VarRefExp(_) => state{!varref_varid(expr)!};
+    AssignInitializer(e)  => eval_expr(e, state); 
+    AddOp(lexp, rexp) => eval_bin_expr("+", lexp, rexp, state);
+    SubtractOp(lexp, rexp) => eval_bin_expr("-", lexp, rexp, state);
+    MultiplyOp(lexp, rexp) => eval_bin_expr("*", lexp, rexp, state);
+    DivideOp(lexp, rexp) => eval_bin_expr("/", lexp, rexp, state);
+    
+    EqualityOp(lexp, rexp) => eval_bin_expr("==", lexp, rexp, state);
+    LessThanOp(lexp, rexp) => eval_bin_expr("<", lexp, rexp, state);
+    LessOrEqualOp(lexp, rexp) => eval_bin_expr("<=", lexp, rexp, state);
+    
+    _ => println("warning: unsupported expression in eval: ", expr_asttext(expr))
+         bot;
+  endcase;
+
+
+
+undef_vars :: CState, *VariableSymbolNT -> CState;
+undef_vars(state, [!]) = state;
+undef_vars(state, v::vars) =
+    let varid = varsym_varid(v);
+    in  undef_vars(state \ [varid -> bot], vars);
+
+comb(a, b) = a lub b;
+wide(_, b) = b;
+eq(a, b)   = (a = b);
