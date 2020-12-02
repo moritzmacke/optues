@@ -1,3 +1,7 @@
+// Optimierende Uebersetzer WS 2020/21
+// Aufgabe 2: Konstantenpropagation
+// Moritz Macke, Markus Grech, Leonhard Hörmann
+
 SET
 
 DOMAIN
@@ -10,9 +14,9 @@ ENDDOMAIN
 
 PROBLEM Constant_Propagation
   direction:  forward
-  carrier:    LiftedState
-  init_start: lift([-> top])
-  init:       bot
+  carrier:    CState
+  init_start: [-> bot]
+  init:       [-> top]
 
 
   equal:      eq
@@ -22,53 +26,96 @@ PROBLEM Constant_Propagation
 
 TRANSFER
 
-FunctionEntry(_), _: @;
-WhileJoin(), _: @;
-IfJoin(), _: @;
 
-
-ExprStatement(expr), _:
-  let state <= @;
-  in lift(transfer(expr, state));
-
-DeclareStmt(symbol, type), _:
-  let varid = varsym_varid(symbol);
-      state <= @;
-  in lift(state \ [ varid -> top ]);
-
-ScopeStatement(IfStmt(ExprStatement(expr))), _:
-    let state <= @;
-    in lift(transfer(expr, state));
-
-
-UndeclareStmt(vars), _:
-    let state <= @;
-    in  lift(undef_vars(state, vars));
-
-FunctionExit(_, vars), _:
-    let state <= @;
-    in  lift(undef_vars(state, vars));
-
-
-statement, _:
-  println("warning: cannot handle ",
-          "statement of the form: ",
-          stmt_asttext(statement))
-  @;
+statement, edge:
+  //println("handling statement of the form: ", stmt_asttext(statement),
+      //" with edge: ", edge, " with flow data: ", @)
+  //very helpful develop & debug output
+  transfer_stmt(statement, edge, @);
 
 
 
 SUPPORT
 
+//uninterestig statements for the purpose of this analysis:
+transfer_stmt(FunctionEntry(_), _, state_in) = state_in;
+transfer_stmt(IfJoin(), _, state_in) = state_in;
+transfer_stmt(WhileJoin(), _, state_in) = state_in;
+transfer_stmt(LabelStatement(), _, state_in) = state_in;
 
-transfer :: Expression, CState -> CState;
-transfer(expr, state) =
+
+//interesting statements for the purpose of this analysis:
+transfer_stmt(DeclareStmt(symbol, type), _, state_in) =
+  //if a variable is shadowed in a nested scope, we currently
+  //forget the parent scope's constant value
+  let varid = varsym_varid(symbol);
+  in state_in \ [ varid -> bot ];
+
+transfer_stmt(UndeclareStmt(vars), _, state_in) =
+    undef_vars(state_in, vars);
+
+transfer_stmt(FunctionExit(_, vars), _, state_in) =
+    undef_vars(state_in, vars);
+
+
+transfer_stmt(ExprStatement(expr), _, state_in) =
+  transfer_expr_stmt(expr, state_in);
+
+
+transfer_stmt(ScopeStatement(IfStmt(ExprStatement(cond_expr))), true_edge, state_in) =
+    transfer_branch(cond_expr, 1, state_in);
+
+transfer_stmt(ScopeStatement(IfStmt(ExprStatement(cond_expr))), false_edge, state_in) =
+    transfer_branch(cond_expr, 0, state_in);
+
+transfer_stmt(LogicalIf(cond_expr), true_edge, state_in) =
+    transfer_branch(cond_expr, 1, state_in);
+
+transfer_stmt(LogicalIf(cond_expr), false_edge, state_in) =
+    transfer_branch(cond_expr, 0, state_in);
+
+
+transfer_stmt(ScopeStatement(WhileStmt(ExprStatement(cond_expr))), true_edge, state_in) =
+    transfer_branch(cond_expr, 1, state_in);
+
+transfer_stmt(ScopeStatement(WhileStmt(ExprStatement(cond_expr))), false_edge, state_in) =
+	 state_in; //no special handling here
+
+
+transfer_stmt(statement, edge, state_in) =
+    println("warning: unhandled statement of the form: ",
+	     stmt_asttext(statement), " with edge: ", edge)
+    state_in;
+
+
+
+transfer_expr_stmt :: Expression, CState -> CState;
+transfer_expr_stmt(expr, state) =
   case expr of
-    AssignOp(var, rexp) => state \ [ varref_varid(var) ->
-                                           eval_expr(rexp, state)
-                                         ];
-    _ => state;
+    AssignOp(var, rexp) =>
+        if state = [ -> top] //if we're in unreachable code, keep the all-top state
+            then state
+            else state \ [
+                varref_varid(var) ->
+                    eval_expr(rexp, state)
+                ];
+    IntVal(value) => state; //ignore these null-statements, f.e. '(void)0;'
+    _ =>
+        println("unhandled expr: ", expr_asttext(expr))
+        state;
   endcase;
+
+transfer_branch :: Expression, snum, CState -> CState;
+transfer_branch(cond_expr, cond_edge, state_in) =
+    let result = eval_expr(cond_expr, state_in);
+    in  if result = bot || result = top
+        then state_in
+        else 
+          let result_val <= result;
+          in  if result_val = cond_edge
+              then state_in
+              else [-> top]; //unreachable branch should not influence the other
+
 
 apply_op :: str, snum, snum -> snum;
 apply_op(op, a, b) = 
@@ -76,11 +123,23 @@ apply_op(op, a, b) =
     "+" => a + b;
     "-" => a - b;
     "*" => a * b;
+	 //Note that integer division rounds "in implementation-defined direction"
+	 //until C++11, since then it rounds by truncating towards 0.
+	 //To limit to implementation-agnostic analysis, we would need to check
+	 //for a remainder of 0, and otherwise return 'bot'.
     "/" => a / b;
-    "==" => if a = b then 1 else 0;
+    
+    "!=" => if a != b then 1 else 0;
     "<" => if a < b then 1 else 0;
     "<=" => if a <= b then 1 else 0;
-    _   => println("Unsupported operation in snum_op: ", op)
+    "==" => if a = b then 1 else 0;
+    ">=" => if a >= b then 1 else 0;
+    ">" => if a > b then 1 else 0;
+    
+    "&&" => a & b;
+    "||" => a | b;
+    
+    _   => println("Unsupported operation in apply_op: ", op)
            -1;
   endcase;
 
@@ -104,16 +163,29 @@ eval_expr :: Expression, CState -> ConstValue;
 eval_expr(expr, state) = 
   case expr of
     IntVal(v) => lift(val-astint(v));
+	 BoolValExp(v) => lift(val-astint(v));
+    
     VarRefExp(_) => state{!varref_varid(expr)!};
     AssignInitializer(e)  => eval_expr(e, state); 
-    AddOp(lexp, rexp) => eval_bin_expr("+", lexp, rexp, state);
+    
+	 AddOp(lexp, rexp) => eval_bin_expr("+", lexp, rexp, state);
     SubtractOp(lexp, rexp) => eval_bin_expr("-", lexp, rexp, state);
     MultiplyOp(lexp, rexp) => eval_bin_expr("*", lexp, rexp, state);
     DivideOp(lexp, rexp) => eval_bin_expr("/", lexp, rexp, state);
     
-    EqualityOp(lexp, rexp) => eval_bin_expr("==", lexp, rexp, state);
+    NotEqualOp(lexp, rexp) => eval_bin_expr("!=", lexp, rexp, state);
     LessThanOp(lexp, rexp) => eval_bin_expr("<", lexp, rexp, state);
     LessOrEqualOp(lexp, rexp) => eval_bin_expr("<=", lexp, rexp, state);
+    EqualityOp(lexp, rexp) => eval_bin_expr("==", lexp, rexp, state);
+    GreaterOrEqualOp(lexp, rexp) => eval_bin_expr(">=", lexp, rexp, state);
+    GreaterThanOp(lexp, rexp) => eval_bin_expr(">", lexp, rexp, state);
+    
+    NotOp(exp) =>
+        let result <= eval_expr(exp, state);
+        in lift(1 - result);
+    
+    AndOp(lexp, rexp) => eval_bin_expr("&&", lexp, rexp, state);
+    OrOp(lexp, rexp) => eval_bin_expr("||", lexp, rexp, state);
     
     _ => println("warning: unsupported expression in eval: ", expr_asttext(expr))
          bot;
@@ -127,6 +199,8 @@ undef_vars(state, v::vars) =
     let varid = varsym_varid(v);
     in  undef_vars(state \ [varid -> bot], vars);
 
-comb(a, b) = a lub b;
-wide(_, b) = b;
+comb(a, b) = crunch(a, b, comb_impl);
+comb_impl(a, b) = a glb b;
+wide(a, b) = crunch(a, b, wide_impl); //no widening used
+wide_impl(a, b) = b;
 eq(a, b)   = (a = b);
