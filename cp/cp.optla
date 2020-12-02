@@ -1,5 +1,5 @@
 // Optimierende Uebersetzer WS 2020/21
-// Aufgabe 2: Konstantenpropagation
+// Aufgabe 3: Konstantenpropagation
 // Moritz Macke, Markus Grech, Leonhard Hörmann
 
 SET
@@ -7,7 +7,6 @@ SET
 DOMAIN
   ConstValue = flat(snum)
   CState = VariableId -> ConstValue
-  LiftedState = lift(CState)
 ENDDOMAIN
 
 
@@ -59,7 +58,7 @@ transfer_stmt(FunctionExit(_, vars), _, state_in) =
 
 
 transfer_stmt(ExprStatement(expr), _, state_in) =
-  transfer_expr_stmt(expr, state_in);
+    transfer_expr_stmt(expr, state_in);
 
 
 transfer_stmt(ScopeStatement(IfStmt(ExprStatement(cond_expr))), true_edge, state_in) =
@@ -79,7 +78,7 @@ transfer_stmt(ScopeStatement(WhileStmt(ExprStatement(cond_expr))), true_edge, st
     transfer_branch(cond_expr, 1, state_in);
 
 transfer_stmt(ScopeStatement(WhileStmt(ExprStatement(cond_expr))), false_edge, state_in) =
-	 state_in; //no special handling here
+    state_in; //no special handling here
 
 
 transfer_stmt(statement, edge, state_in) =
@@ -120,27 +119,27 @@ transfer_branch(cond_expr, cond_edge, state_in) =
 apply_op :: str, snum, snum -> snum;
 apply_op(op, a, b) = 
   case op of
-    "+" => a + b;
-    "-" => a - b;
-    "*" => a * b;
+    "+"  => a + b;
+    "-"  => a - b;
+    "*"  => a * b;
 	 //Note that integer division rounds "in implementation-defined direction"
 	 //until C++11, since then it rounds by truncating towards 0.
 	 //To limit to implementation-agnostic analysis, we would need to check
 	 //for a remainder of 0, and otherwise return 'bot'.
-    "/" => a / b;
+    "/"  => a / b;
     
     "!=" => if a != b then 1 else 0;
-    "<" => if a < b then 1 else 0;
+    "<"  => if a < b then 1 else 0;
     "<=" => if a <= b then 1 else 0;
     "==" => if a = b then 1 else 0;
     ">=" => if a >= b then 1 else 0;
-    ">" => if a > b then 1 else 0;
+    ">"  => if a > b then 1 else 0;
     
     "&&" => a & b;
     "||" => a | b;
     
-    _   => println("Unsupported operation in apply_op: ", op)
-           -1;
+    _    => println("Unsupported operation in apply_op: ", op)
+            -1;
   endcase;
 
 binary_op :: str, ConstValue, ConstValue -> ConstValue;
@@ -163,12 +162,12 @@ eval_expr :: Expression, CState -> ConstValue;
 eval_expr(expr, state) = 
   case expr of
     IntVal(v) => lift(val-astint(v));
-	 BoolValExp(v) => lift(val-astint(v));
+    BoolValExp(v) => lift(val-astint(v));
     
     VarRefExp(_) => state{!varref_varid(expr)!};
     AssignInitializer(e)  => eval_expr(e, state); 
     
-	 AddOp(lexp, rexp) => eval_bin_expr("+", lexp, rexp, state);
+    AddOp(lexp, rexp) => eval_bin_expr("+", lexp, rexp, state);
     SubtractOp(lexp, rexp) => eval_bin_expr("-", lexp, rexp, state);
     MultiplyOp(lexp, rexp) => eval_bin_expr("*", lexp, rexp, state);
     DivideOp(lexp, rexp) => eval_bin_expr("/", lexp, rexp, state);
